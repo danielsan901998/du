@@ -7,6 +7,14 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
+#include <sys/syscall.h>
+#define BUF_SIZE 4196
+struct linux_dirent {
+    long           d_ino;
+    off_t          d_off;
+    unsigned short d_reclen;
+    char           d_name[];
+};
 static const char *humanSize(size_t bytes)
 {
     const char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
@@ -26,31 +34,38 @@ static const char *humanSize(size_t bytes)
 size_t parse_fd(int fd);
 size_t folder_size(int fd){
     size_t seconds=0;
-    DIR *d;
-    struct dirent *dp;
-    int ffd;
+    char buff[BUF_SIZE];
 
 
-    if ((d = fdopendir(fd)) == NULL) {
-        close(fd);
-        return seconds;
-    }
-    while ((dp = readdir(d)) != NULL) {
-        if(strcmp(dp->d_name,".")==0)
-            continue;
-        if(strcmp(dp->d_name,"..")==0)
-            continue;
-        /* there is a possible race condition here as the file
-         * could be renamed between the readdir and the open */
-        if ((ffd = openat(fd, dp->d_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)) == -1){
-            if(errno!=ELOOP)
-                perror(dp->d_name);
-            continue;
+    for ( ; ; ) {
+        int nread = syscall(SYS_getdents, fd, buff, BUF_SIZE);
+        if (nread == -1){
+            perror("getdents");
+            break;
         }
-        seconds+=parse_fd(ffd);
-        close(ffd);
+
+        if (nread == 0)
+            break;
+
+        //printf("nread: %d\n",nread);
+        for(int i=0;i<nread;){
+            struct linux_dirent* d = (struct linux_dirent *)(buff+i);
+            i+=d->d_reclen;
+            if(strcmp(d->d_name,".")==0)
+                continue;
+            if(strcmp(d->d_name,"..")==0)
+                continue;
+            /* there is a possible race condition here as the file
+             * could be renamed between the readdir and the open */
+            int ffd;
+            if ((ffd = openat(fd, d->d_name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)) == -1){
+                if(errno!=ELOOP && errno!=ENXIO)
+                    perror(d->d_name);
+                continue;
+            }
+            seconds+=parse_fd(ffd);
+        }
     }
-    closedir(d); // note this implicitly closes dfd
     return seconds;
 }
 size_t parse_fd(int fd){
@@ -64,6 +79,7 @@ size_t parse_fd(int fd){
     }
     else if(S_ISREG(statbuf.st_mode))
         seconds += statbuf.st_blocks*512;
+    close(fd);
     return seconds;
 }
 
