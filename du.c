@@ -27,7 +27,7 @@ static const char *humanSize(size_t bytes)
 }
 size_t parse_fd(int fd);
 size_t folder_size(int fd){
-    size_t seconds=0;
+    size_t size=0;
     char buff[BUF_SIZE];
 
 
@@ -41,7 +41,7 @@ size_t folder_size(int fd){
         if (nread == 0)
             break;
 
-        //printf("nread: %d\n",nread);
+        //printf("nread: %d stat_size: %lu\n",nread, folder_size);
         for(int i=0;i<nread;){
             struct dirent* d = (struct dirent *)(buff+i);
             i+=d->d_reclen;
@@ -57,10 +57,10 @@ size_t folder_size(int fd){
                     perror(d->d_name);
                 continue;
             }
-            seconds+=parse_fd(ffd);
+            size+=parse_fd(ffd);
         }
     }
-    return seconds;
+    return size;
 }
 size_t parse_fd(int fd){
     struct stat statbuf;
@@ -69,6 +69,10 @@ size_t parse_fd(int fd){
     size_t seconds=0;
     if(S_ISDIR(statbuf.st_mode)){
         seconds += statbuf.st_blocks*512;
+        //TODO: allocate buffer with st_size as length
+        //  statbuf.st_size is the byte size of the directory
+        //  use it to allocate enought memory to use as buffer
+        //  for getdents syscall
         seconds += folder_size(fd);
     }
     else if(S_ISREG(statbuf.st_mode))
@@ -83,8 +87,8 @@ int main(int argc, char** argv){
     for(int i=1;i<argc;i++){
         char* filename=argv[i];
         size_t len = strlen(filename);
-        if (filename[len -1] == '/')    // one character
-            filename[len -1] = 0;    // one character
+        if (filename[len -1] == '/')    // last character
+            filename[len -1] = 0;
         size_t size=parse_fd(open(filename, O_RDONLY));
         printf("%s\t%s\n",humanSize(size), filename);
     }
