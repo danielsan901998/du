@@ -9,12 +9,6 @@
 #include <signal.h>
 #include <sys/syscall.h>
 #define BUF_SIZE 4196
-struct linux_dirent {
-    long           d_ino;
-    off_t          d_off;
-    unsigned short d_reclen;
-    char           d_name[];
-};
 static const char *humanSize(size_t bytes)
 {
     const char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
@@ -38,7 +32,7 @@ size_t folder_size(int fd){
 
 
     for ( ; ; ) {
-        int nread = syscall(SYS_getdents, fd, buff, BUF_SIZE);
+        int nread = syscall(SYS_getdents64, fd, buff, BUF_SIZE);
         if (nread == -1){
             perror("getdents");
             break;
@@ -49,7 +43,7 @@ size_t folder_size(int fd){
 
         //printf("nread: %d\n",nread);
         for(int i=0;i<nread;){
-            struct linux_dirent* d = (struct linux_dirent *)(buff+i);
+            struct dirent* d = (struct dirent *)(buff+i);
             i+=d->d_reclen;
             if(strcmp(d->d_name,".")==0)
                 continue;
