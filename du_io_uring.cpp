@@ -22,8 +22,6 @@ static size_t size;
 static struct io_uring ring;
 static int sqes_in_flight=0;
 
-static void parse_fd(int fd);
-
 static void drain_cqes()
 {
     int count;
@@ -75,21 +73,21 @@ static void schedule_open(int parent_fd, const char* name)
     sqe = get_sqe();
     io_uring_prep_openat(sqe, parent_fd, name, O_NOFOLLOW | O_NONBLOCK, O_RDONLY);
 }
-
-static void submit_wait_until_complete(){
-    while (sqes_in_flight) {
-        int ret = io_uring_submit_and_wait(&ring, sqes_in_flight);
-        if (ret < 0 && errno != EBUSY) {
-            perror("io_uring_submit_and_wait");
-            exit(EXIT_FAILURE);
-        }
-
-        drain_cqes();
-
-        for(int fd:queue)
-            parse_fd(fd);
-        queue.clear();
+static void parse_file(int dirfd, const char* name){
+    struct statx statbuf;
+    //printf("fd:%d\n",fd);
+    //TODO: use AT_EMPTY_PATH on statx
+    if (statx(dirfd, name, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &statbuf) != 0){
+        printf("error statx %s\n",name);
+        return;
     }
+    if(S_ISDIR(statbuf.stx_mode)){
+        size += statbuf.stx_blocks*512;
+        schedule_open(dirfd,name);
+    }
+    else if(S_ISREG(statbuf.stx_mode))
+        size += statbuf.stx_blocks*512;
+    return;
 }
 
 static char buff[BUF_SIZE];
@@ -112,28 +110,27 @@ static void parse_directory(int fd){
                 continue;
             if(strcmp(d->d_name,"..")==0)
                 continue;
-            schedule_open(fd,d->d_name);
+            parse_file(fd,d->d_name);
         }
         //submit to avoid invalidation of d->name of buff.
         io_uring_submit(&ring);
     }
 }
-static void parse_fd(int fd){
-    struct stat statbuf;
-    //printf("fd:%d\n",fd);
-    //TODO: use AT_EMPTY_PATH on statx
-    if (fstat(fd, &statbuf) != 0){
-        printf("error fd %d\n",fd);
-        return;
+
+static void submit_wait_until_complete(){
+    while (sqes_in_flight) {
+        int ret = io_uring_submit_and_wait(&ring, sqes_in_flight);
+        if (ret < 0 && errno != EBUSY) {
+            perror("io_uring_submit_and_wait");
+            exit(EXIT_FAILURE);
+        }
+
+        drain_cqes();
+
+        for(int fd:queue)
+            parse_directory(fd);
+        queue.clear();
     }
-    if(S_ISDIR(statbuf.st_mode)){
-        size += statbuf.st_blocks*512;
-        parse_directory(fd);
-    }
-    else if(S_ISREG(statbuf.st_mode))
-        size += statbuf.st_blocks*512;
-    close(fd);
-    return;
 }
 
 static const char *humanSize(size_t bytes)
@@ -180,7 +177,7 @@ int main(int argc, char** argv){
         char* filename=argv[i];
         size_t len = strlen(filename);
 
-        parse_fd(open(filename, O_RDONLY));
+        parse_file(AT_FDCWD, filename);
 
         submit_wait_until_complete();
         printf("%s\t%s\n",humanSize(size), filename);
