@@ -12,11 +12,11 @@
 
 #include <liburing.h>
 
-#include <vector>
+#include <deque>
 
-#define BUF_SIZE 16384
+#define BUF_SIZE 16384*2
 
-std::vector<int> queue;
+std::deque<int> queue;
 
 static size_t size;
 static struct io_uring ring;
@@ -24,11 +24,10 @@ static int sqes_in_flight=0;
 
 static void drain_cqes()
 {
-    int count;
     uint32_t head;
     struct io_uring_cqe *cqe;
 
-    count = 0;
+    int count = 0;
     io_uring_for_each_cqe (&ring, head, cqe) {
         //TODO: handle error open file because of limit of open file descriptors
         if(cqe->res>0)
@@ -67,11 +66,14 @@ static struct io_uring_sqe *get_sqe()
 
 static void schedule_open(int parent_fd, const char* name)
 {
-    int len;
-    struct io_uring_sqe *sqe;
-
-    sqe = get_sqe();
+    struct io_uring_sqe* sqe = get_sqe();
     io_uring_prep_openat(sqe, parent_fd, name, O_NOFOLLOW | O_NONBLOCK, O_RDONLY);
+}
+struct statx stat_buf[BUF_SIZE];
+static void schedule_statx(int parent_fd, const char* name)
+{
+    struct io_uring_sqe* sqe = get_sqe();
+    io_uring_prep_statx(sqe, parent_fd, name, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &stat_buf[sqes_in_flight-1]);
 }
 static void parse_file(int dirfd, const char* name){
     struct statx statbuf;
@@ -102,7 +104,6 @@ static void parse_directory(int fd){
         if (nread == 0)
             break;
 
-        //printf("nread: %d\n",nread);
         for(int i=0;i<nread;){
             struct dirent* d = (struct dirent *)(buff+i);
             i+=d->d_reclen;
@@ -110,10 +111,50 @@ static void parse_directory(int fd){
                 continue;
             if(strcmp(d->d_name,"..")==0)
                 continue;
-            parse_file(fd,d->d_name);
+            schedule_statx(fd,d->d_name);
         }
-        //submit to avoid invalidation of d->name of buff.
-        io_uring_submit(&ring);
+        while (sqes_in_flight) {
+            int ret = io_uring_submit_and_wait(&ring, sqes_in_flight);
+            if (ret < 0 && errno != EBUSY) {
+                perror("io_uring_submit_and_wait");
+                exit(EXIT_FAILURE);
+            }
+
+            uint32_t head;
+            struct io_uring_cqe *cqe;
+
+            int count = 0;
+            io_uring_for_each_cqe (&ring, head, cqe) {
+                count++;
+            }
+            sqes_in_flight -= count;
+            io_uring_cq_advance(&ring, count);
+        }
+        int count=0;
+        for(int i=0;i<nread;){
+            struct dirent* d = (struct dirent *)(buff+i);
+            i+=d->d_reclen;
+            if(strcmp(d->d_name,".")==0)
+                continue;
+            if(strcmp(d->d_name,"..")==0)
+                continue;
+            if(S_ISDIR(stat_buf[count].stx_mode)){
+                size += stat_buf[count].stx_blocks*512;
+                schedule_open(fd,d->d_name);
+            }
+            else if(S_ISREG(stat_buf[count].stx_mode))
+                size += stat_buf[count].stx_blocks*512;
+            count++;
+        }
+        while (sqes_in_flight) {
+            int ret = io_uring_submit_and_wait(&ring, sqes_in_flight);
+            if (ret < 0 && errno != EBUSY) {
+                perror("io_uring_submit_and_wait");
+                exit(EXIT_FAILURE);
+            }
+
+            drain_cqes();
+        }
     }
 }
 
@@ -126,10 +167,10 @@ static void submit_wait_until_complete(){
         }
 
         drain_cqes();
-
-        for(int fd:queue)
-            parse_directory(fd);
-        queue.clear();
+        while(!queue.empty()){
+            parse_directory(queue.front());
+            queue.pop_front();
+        }
     }
 }
 

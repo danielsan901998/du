@@ -31,7 +31,6 @@ size_t folder_size(int fd){
     size_t size=0;
     char buff[BUF_SIZE];
 
-
     for ( ; ; ) {
         int nread = syscall(SYS_getdents64, fd, buff, BUF_SIZE);
         if (nread == -1){
@@ -69,8 +68,12 @@ size_t parse_file(int dirfd, const char* name){
         //  use it to allocate enought memory to use as buffer
         //  for getdents syscall
         int fd = openat(dirfd,name,O_NOFOLLOW | O_NONBLOCK, O_RDONLY);
-        seconds += folder_size(fd);
-        close(fd);
+        if(fd==-1)
+            perror("openat");
+        else{
+            seconds += folder_size(fd);
+            close(fd);
+        }
     }
     else if(S_ISREG(statbuf.stx_mode))
         seconds += statbuf.stx_blocks*512;
