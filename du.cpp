@@ -56,8 +56,8 @@ size_t folder_size(int fd){
     }
     return size;
 }
+struct statx statbuf;
 size_t parse_file(int dirfd, const char* name){
-    struct statx statbuf;
     if (statx(dirfd, name, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &statbuf) != 0)
         return 0;
     size_t seconds=0;
