@@ -60,9 +60,8 @@ struct statx statbuf;
 size_t parse_file(int dirfd, const char* name){
     if (statx(dirfd, name, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &statbuf) != 0)
         return 0;
-    size_t seconds=0;
+    size_t seconds = statbuf.stx_blocks*512;
     if(S_ISDIR(statbuf.stx_mode)){
-        seconds += statbuf.stx_blocks*512;
         //TODO: allocate buffer with st_size as length
         //  statbuf.st_size is the byte size of the directory
         //  use it to allocate enought memory to use as buffer
@@ -75,8 +74,6 @@ size_t parse_file(int dirfd, const char* name){
             close(fd);
         }
     }
-    else if(S_ISREG(statbuf.stx_mode))
-        seconds += statbuf.stx_blocks*512;
     return seconds;
 }
 

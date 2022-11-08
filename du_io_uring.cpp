@@ -132,12 +132,9 @@ static void submit_wait_until_complete(){
             queue.pop_front();
             if(f->state==file::State::STAT){
                 if(f->ret==0){
-                    if(S_ISDIR(f->stat.stx_mode)){
-                        size += f->stat.stx_blocks*512;
+                    size += f->stat.stx_blocks*512;
+                    if(S_ISDIR(f->stat.stx_mode))
                         schedule_open(f);
-                    }
-                    else if(S_ISREG(f->stat.stx_mode))
-                        size += f->stat.stx_blocks*512;
                 }
             }else{
                 if(f->ret<0){
