@@ -9,8 +9,8 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/syscall.h>
+#include <unordered_set>
 #define BUF_SIZE 4096
-size_t parse_file(int dirfd, const char* name);
 static const char *humanSize(size_t bytes)
 {
 	const char *suffix[] = {"B", "KB", "MB", "GB", "TB"};
@@ -26,6 +26,30 @@ static const char *humanSize(size_t bytes)
 	static char output[200];
 	sprintf(output, "%.01lf%s", dblBytes, suffix[i]);
 	return output;
+}
+struct statx statbuf;
+std::unordered_set<size_t> nodes;
+size_t get_size(int fd, const char* name){
+	if (statx(fd, name, AT_SYMLINK_NOFOLLOW,STATX_BLOCKS|STATX_INO|STATX_NLINK, &statbuf) != 0)
+		return 0;
+	if(statbuf.stx_nlink>1){
+		if(!nodes.insert(statbuf.stx_ino).second)
+			return 0;
+	}
+	return statbuf.stx_blocks*512;
+}
+size_t folder_size(int fd);
+size_t parse_folder(int dirfd, const char* name){
+	int child = openat(dirfd,name,O_NOFOLLOW | O_NONBLOCK, O_RDONLY);
+	if(child==-1){
+		fprintf(stderr, "openat %s: %s\n",name,strerror(errno));
+		return 0;
+	}
+	else{
+		size_t size = folder_size(child);
+		close(child);
+		return size;
+	}
 }
 size_t folder_size(int fd){
 	size_t size=0;
@@ -50,26 +74,12 @@ size_t folder_size(int fd){
 				continue;
 			/* there is a possible race condition here as the file
 			 * could be renamed between the readdir and the open */
-			size+=parse_file(fd, d->d_name);
+			size+=get_size(fd, d->d_name);
+			if(d->d_type==DT_DIR)
+				size+=parse_folder(fd,d->d_name);
 		}
 	}
 	return size;
-}
-struct statx statbuf;
-size_t parse_file(int dirfd, const char* name){
-	if (statx(dirfd, name, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &statbuf) != 0)
-		return 0;
-	size_t seconds = statbuf.stx_blocks*512;
-	if(S_ISDIR(statbuf.stx_mode)){
-		int fd = openat(dirfd,name,O_NOFOLLOW | O_NONBLOCK, O_RDONLY);
-		if(fd==-1)
-			perror("openat");
-		else{
-			seconds += folder_size(fd);
-			close(fd);
-		}
-	}
-	return seconds;
 }
 
 int main(int argc, char** argv){
@@ -78,9 +88,15 @@ int main(int argc, char** argv){
 	for(int i=1;i<argc;i++){
 		char* filename=argv[i];
 		size_t len = strlen(filename);
+		size_t size;
 		if (filename[len -1] == '/')    // last character
 			filename[len -1] = 0;
-		size_t size=parse_file(AT_FDCWD, filename);
+		if (statx(AT_FDCWD, filename, AT_SYMLINK_NOFOLLOW,STATX_MODE | STATX_BLOCKS, &statbuf) != 0)
+			fprintf(stderr, "statx %s: %s\n",filename,strerror(errno));
+		if(S_ISREG(statbuf.stx_mode))
+			size=statbuf.stx_blocks*512;
+		else if (S_ISDIR(statbuf.stx_mode))
+			size=parse_folder(AT_FDCWD, filename);
 		printf("%s\t%s\n",humanSize(size), filename);
 	}
 	return 0;
